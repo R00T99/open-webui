@@ -2901,11 +2901,27 @@ def build_response_object(response, response_data):
 async def get_system_oauth_token(request, user):
     oauth_token = None
     try:
-        if request.cookies.get('oauth_session_id', None):
+        oauth_session_id = request.cookies.get('oauth_session_id', None)
+        if oauth_session_id:
             oauth_token = await request.app.state.oauth_manager.get_oauth_token(
                 user.id,
-                request.cookies.get('oauth_session_id', None),
+                oauth_session_id,
             )
+        elif user is not None:
+            # Fallback: no oauth_session_id cookie is present (e.g. a scheduled
+            # task / background job that runs without an incoming HTTP request
+            # context). Look up the user's most recent OAuth session directly
+            # so that tool servers with auth_type == 'system_oauth' still
+            # receive a forwarded access token.
+            sessions = await OAuthSessions.get_sessions_by_user_id(user.id)
+            if sessions:
+                latest_session = max(
+                    sessions, key=lambda s: (s.updated_at or 0, s.created_at or 0)
+                )
+                oauth_token = await request.app.state.oauth_manager.get_oauth_token(
+                    user.id,
+                    latest_session.id,
+                )
     except Exception as e:
         log.error(f'Error getting OAuth token: {e}')
     return oauth_token
